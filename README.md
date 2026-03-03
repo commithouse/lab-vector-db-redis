@@ -61,87 +61,15 @@ pip install redis sentence-transformers numpy
 
 ---
 
-## Passo 3 — Criar o script `vector_redis.py`
+## Passo 3 — Usar o script `vector_redis.py`
 
-```python
-import redis
-import json
-import numpy as np
-from sentence_transformers import SentenceTransformer
+O arquivo `vector_redis.py` já está pronto no projeto e executa este fluxo:
 
-# ── 1. Conexão com Redis ──────────────────────────────────────────────────────
-r = redis.Redis(host="localhost", port=6379, decode_responses=True)
-model = SentenceTransformer("all-MiniLM-L6-v2")  # 384 dimensões, local, grátis
-
-print("✅ Conectado ao Redis e modelo carregado\n")
-
-# ── 2. Base de documentos (sua base de conhecimento) ─────────────────────────
-documentos = [
-    "Redis é um banco de dados em memória ultra-rápido.",
-    "Redis Cluster escala horizontalmente com 16384 hash slots.",
-    "Valkey é o fork open-source do Redis mantido pela Linux Foundation.",
-    "CAP Theorem: nunca ter Consistência, Disponibilidade e Partição ao mesmo tempo.",
-    "RDB faz snapshots periódicos; AOF persiste cada write.",
-    "Sorted Sets permitem leaderboards em O(log N) com ZADD e ZRANK.",
-    "Vector databases armazenam embeddings para busca semântica.",
-    "RAG usa busca vetorial para dar contexto ao LLM antes de responder.",
-]
-
-# ── 3. Gerar embeddings e salvar no Redis ────────────────────────────────────
-print("📥 Gerando embeddings e salvando no Redis...")
-for i, doc in enumerate(documentos):
-    vetor = model.encode(doc).tolist()
-    r.hset(f"doc:{i}", mapping={
-        "id":        str(i),
-        "texto":     doc,
-        "embedding": json.dumps(vetor),
-    })
-    print(f"  ✅ doc:{i} → {doc[:55]}...")
-
-print(f"\n📊 {len(documentos)} documentos salvos\n")
-
-# ── 4. Função de busca por similaridade cosseno ───────────────────────────────
-def buscar_similares(query: str, top_k: int = 3) -> list:
-    q_vec = model.encode(query)
-    resultados = []
-
-    for i in range(len(documentos)):
-        raw = r.hget(f"doc:{i}", "embedding")
-        doc_vec = np.array(json.loads(raw))
-
-        # Similaridade cosseno: 1.0 = idêntico | 0.0 = sem relação
-        score = float(
-            np.dot(q_vec, doc_vec) /
-            (np.linalg.norm(q_vec) * np.linalg.norm(doc_vec))
-        )
-        texto = r.hget(f"doc:{i}", "texto")
-        resultados.append((score, texto))
-
-    resultados.sort(reverse=True)
-    return resultados[:top_k]
-
-# ── 5. Testar com queries ────────────────────────────────────────────────────
-queries = [
-    "Como o Redis escala com múltiplos servidores?",
-    "Qual banco usar quando o Redis muda de licença?",
-    "Como a IA busca informações relevantes antes de responder?",
-]
-
-for query in queries:
-    print(f"🔍 Query: \"{query}\"")
-    for score, texto in buscar_similares(query, top_k=2):
-        barra = "█" * int(score * 20)
-        print(f"   {barra:<20} {score:.3f} → {texto[:65]}...")
-    print()
-
-# ── 6. Inspecionar o vetor salvo ──────────────────────────────────────────────
-print("🔎 Inspecionando doc:0 no Redis:")
-campos = r.hgetall("doc:0")
-embedding = json.loads(campos["embedding"])
-print(f"   texto:      {campos['texto']}")
-print(f"   dimensões:  {len(embedding)}")
-print(f"   primeiros 5 valores: {[round(v, 4) for v in embedding[:5]]}")
-```
+1. conecta no Redis e carrega o modelo de embeddings local;
+2. indexa os documentos de exemplo;
+3. calcula similaridade semântica para queries iniciais;
+4. mostra uma inspeção de um embedding salvo;
+5. entra em **modo interativo** para você digitar novas perguntas em loop.
 
 ---
 
@@ -177,6 +105,19 @@ python vector_redis.py
    texto:      Redis é um banco de dados em memória ultra-rápido.
    dimensões:  384
    primeiros 5 valores: [-0.0234, 0.1182, -0.0451, 0.2313, 0.0892]
+
+💬 Modo interativo iniciado.
+Digite uma pergunta e pressione Enter (Ctrl+C para sair).
+
+Pergunta > como o redis escala?
+🔍 Query: "como o redis escala?"
+   ████████████████     0.821 → Redis Cluster escala horizontalmente...
+   ██████████           0.612 → Redis é um banco de dados...
+
+Pergunta > qual o papel do rag?
+🔍 Query: "qual o papel do rag?"
+   ████████████████     0.834 → RAG usa busca vetorial para dar contexto...
+   ███████████████      0.797 → Vector databases armazenam embeddings...
 ```
 
 ---
@@ -198,23 +139,14 @@ docker exec redis-vector redis-cli DBSIZE
 
 ## Passo 6 — Adicionar seu próprio prompt
 
-Abra o script e adicione no final:
+Depois das queries iniciais, o script entra automaticamente no prompt:
 
-```python
-# ── 7. Adicionar e buscar seu próprio documento ───────────────────────────────
-meu_doc = "Escreva aqui qualquer texto do seu domínio."
-vetor   = model.encode(meu_doc).tolist()
-r.hset("doc:custom", mapping={
-    "texto":     meu_doc,
-    "embedding": json.dumps(vetor),
-})
-print(f"\n✅ Documento salvo: doc:custom")
-
-minha_query = "Escreva uma pergunta relacionada ao texto acima"
-print(f"\n🔍 Buscando: \"{minha_query}\"")
-for score, texto in buscar_similares(minha_query, top_k=3):
-    print(f"   [{score:.3f}] {texto[:75]}...")
+```text
+Pergunta >
 ```
+
+Nesse ponto, basta digitar novas perguntas e pressionar Enter.  
+Ele continuará no loop de busca semântica até você encerrar com `Ctrl+C`.
 
 ---
 
@@ -246,14 +178,8 @@ Para milhões de vetores, use índice **HNSW** com busca em O(log N):
 pip install redisvl
 ```
 
-```python
-from redisvl.index import SearchIndex
-from redisvl.query import VectorQuery
-
-# Busca aproximada — escala para 1M+ vetores em <1ms
-index   = SearchIndex.from_yaml("schema.yaml")
-results = index.query(VectorQuery(vetor, "embedding", num_results=10))
-```
+Com RedisVL, você cria índice vetorial (HNSW) e faz busca aproximada semântica
+com muito mais escala e baixa latência.
 
 > HNSW (Hierarchical Navigable Small World) é o algoritmo padrão do Redis, Pinecone e Weaviate para busca vetorial em produção.
 
